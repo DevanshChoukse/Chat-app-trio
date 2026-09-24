@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Chatty</title>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#eef2f5;--ink:#14213d;--mute:#5d6b7a;--acc:#1b6ca8;--me:#cfe8ff;--you:#fff;--line:#d5dde4;font-family:Figtree,system-ui,sans-serif}
+@media(prefers-color-scheme:dark){:root{--bg:#10181f;--ink:#e8eef3;--mute:#93a3b3;--acc:#5aa9e6;--me:#1d4468;--you:#1b2630;--line:#2a3742}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink)}
+#app{height:100%;max-width:520px;margin:auto;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+section{height:100%;display:flex;flex-direction:column}
+section[hidden]{display:none}
+header{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line);font-weight:700;font-size:1.15rem}
+header span{flex:1}
+input,button{font:inherit;color:inherit}
+input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--you)}
+button{cursor:pointer;border:0;border-radius:10px;padding:10px 14px;background:var(--acc);color:#fff;font-weight:600}
+button.ghost{background:none;color:var(--acc);padding:6px 8px}
+button:focus-visible,input:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+#auth{justify-content:center;gap:10px;padding:24px}
+#auth h1{margin:0 0 4px;font-size:2rem}
+#auth p{margin:0 0 8px;color:var(--mute)}
+.two{display:flex;gap:10px}.two button{flex:1}
+#err{color:#c0392b;min-height:1.3em;font-size:.9rem}
+#list{flex:1;overflow:auto}
+.row{display:block;width:100%;text-align:left;background:none;color:var(--ink);border-radius:0;border-bottom:1px solid var(--line);padding:16px}
+.empty{padding:24px;color:var(--mute)}
+#msgs{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:6px}
+.msg{max-width:78%;padding:8px 12px;border-radius:14px;background:var(--you);overflow-wrap:anywhere}
+.msg.me{align-self:flex-end;background:var(--me)}
+.msg small{display:block;margin-top:2px;font-size:.7rem;color:var(--mute);text-align:right}
+#bar{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div id="app">
+
+<section id="auth">
+  <h1>Chatty</h1>
+  <p>Sign in to message your friends.</p>
+  <input id="name" placeholder="Your name (only for sign up)" autocomplete="name">
+  <input id="email" type="email" placeholder="Email" autocomplete="email">
+  <input id="pass" type="password" placeholder="Password (6+ characters)" autocomplete="current-password">
+  <div id="err" role="alert"></div>
+  <div class="two"><button id="login">Log in</button><button id="signup" class="ghost">Sign up</button></div>
+</section>
+
+<section id="home" hidden>
+  <header><span>Chats</span><button id="out" class="ghost">Log out</button></header>
+  <div id="list"></div>
+</section>
+
+<section id="chat" hidden>
+  <header><button id="back" class="ghost">Back</button><span id="who"></span></header>
+  <div id="msgs"></div>
+  <div id="bar"><input id="text" placeholder="Type a message" autocomplete="off"><button id="send">Send</button></div>
+</section>
+
+</div>
+
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,onAuthStateChanged,signOut} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import {getFirestore,collection,doc,setDoc,addDoc,query,where,onSnapshot,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBJIuK3O55WakyDe9t3luzSLxvttLNbCag",
+  authDomain: "chatting-apk-b4c4e.firebaseapp.com",
+  projectId: "chatting-apk-b4c4e",
+  storageBucket: "chatting-apk-b4c4e.firebasestorage.app",
+  messagingSenderId: "693609997567",
+  appId: "1:693609997567:web:ad7b6621313cac5e1b18ca"
+};
+
+const app = initializeApp(firebaseConfig), auth = getAuth(app), db = getFirestore(app);
+const $ = id => document.getElementById(id);
+let me = null, other = null, cid = null, unUsers = null, unMsgs = null;
+const show = v => ["auth","home","chat"].forEach(x => $(x).hidden = x !== v);
+const err = m => $("err").textContent = m || "";
+
+$("login").onclick = async () => {
+  try { err(); await signInWithEmailAndPassword(auth, $("email").value, $("pass").value); }
+  catch (e) { err("Could not log in. Check your email and password."); }
+};
+$("signup").onclick = async () => {
+  const n = $("name").value.trim();
+  if (!n) return err("Enter your name to sign up.");
+  try {
+    err();
+    const c = await createUserWithEmailAndPassword(auth, $("email").value, $("pass").value);
+    await setDoc(doc(db, "users", c.user.uid), {name: n});
+  } catch (e) { err("Could not sign up. Use a valid email and a password of 6+ characters."); }
+};
+$("out").onclick = () => signOut(auth);
+
+onAuthStateChanged(auth, u => {
+  me = u;
+  if (unUsers) unUsers();
+  if (unMsgs) unMsgs();
+  if (!u) return show("auth");
+  show("home");
+  unUsers = onSnapshot(collection(db, "users"), s => {
+    const list = $("list"); list.textContent = "";
+    s.forEach(d => {
+      if (d.id === u.uid) return;
+      const b = document.createElement("button");
+      b.className = "row"; b.textContent = d.data().name;
+      b.onclick = () => openChat(d.id, d.data().name);
+      list.append(b);
+    });
+    if (!list.children.length) {
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "No one else has joined yet. Ask a friend to sign up and they will appear here.";
+      list.append(p);
+    }
+  });
+});
+
+function openChat(id, name) {
+  other = id; cid = [me.uid, id].sort().join("_");
+  $("who").textContent = name; show("chat");
+  if (unMsgs) unMsgs();
+  const q = query(collection(db, "messages"), where("chatId", "==", cid), where("members", "array-contains", me.uid));
+  unMsgs = onSnapshot(q, s => {
+    const rows = s.docs.map(d => d.data()).sort((a, b) => (a.at?.seconds ?? 1e12) - (b.at?.seconds ?? 1e12));
+    const box = $("msgs"); box.textContent = "";
+    rows.forEach(m => {
+      const p = document.createElement("div");
+      p.className = "msg " + (m.from === me.uid ? "me" : "you");
+      p.textContent = m.text;
+      const t = document.createElement("small");
+      t.textContent = m.at ? new Date(m.at.seconds * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "sending";
+      p.append(t); box.append(p);
+    });
+    box.scrollTop = box.scrollHeight;
+  });
+}
+
+async function send() {
+  const text = $("text").value.trim();
+  if (!text) return;
+  $("text").value = "";
+  await addDoc(collection(db, "messages"), {chatId: cid, members: [me.uid, other], from: me.uid, text, at: serverTimestamp()});
+}
+$("send").onclick = send;
+$("text").onkeydown = e => { if (e.key === "Enter") send(); };
+$("back").onclick = () => { if (unMsgs) unMsgs(); show("home"); };
+</script>
+</body>
+</html>
